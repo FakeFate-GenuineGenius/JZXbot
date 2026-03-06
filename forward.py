@@ -5,95 +5,94 @@ import requests
 
 WS_URL = "ws://127.0.0.1:3001"
 HTTP_URL = "http://127.0.0.1:3000"
+GROUP_ID = 799940831
 
-GROUP_ID = 799940831   # 你的QQ群号
+# 缓存消息
+message_buffer = {}
 
-# 自动回复内容
-AUTO_REPLY = """
-你好，我现在不在线。
+# 记录是否已经启动计时
+timer_tasks = {}
 
-你的消息已经转发到群里，
-管理员看到后会回复你。
-"""
+
+async def send_after_delay(qq):
+
+    await asyncio.sleep(30)
+
+    if qq in message_buffer:
+
+        msgs = message_buffer[qq]
+
+        content = f"陌生人QQ: {qq}\n\n"
+
+        for m in msgs:
+            content += m + "\n"
+
+        # 1️⃣ 转发到群
+        requests.post(
+            f"{HTTP_URL}/send_group_msg",
+            json={
+                "group_id": GROUP_ID,
+                "message": content
+            }
+        )
+
+        # 2️⃣ 自动回复用户
+        requests.post(
+            f"{HTTP_URL}/send_private_msg",
+            json={
+                "user_id": qq,
+                "message": "你好，我们已经收到你的消息，请稍等工作人员回复。(这是自动回复，小饺子们无须回复呀)"
+            }
+        )
+
+        print("已转发并自动回复:", qq)
+
+        del message_buffer[qq]
+        del timer_tasks[qq]
+
 
 async def listen():
+
     while True:
+
         try:
+
             async with websockets.connect(WS_URL) as ws:
 
                 print("机器人已连接")
 
                 while True:
+
                     msg = await ws.recv()
                     data = json.loads(msg)
 
                     if data.get("post_type") != "message":
                         continue
 
-                    # 私聊消息
                     if data["message_type"] == "private":
 
                         qq = data["user_id"]
                         text = data["raw_message"]
 
-                        print("收到私聊:", qq, text)
+                        print("收到:", qq, text)
 
-                        # 转发到群
-                        forward = f"""
-QQ: {qq}
-消息内容: {text}
-"""
+                        # 初始化缓存
+                        if qq not in message_buffer:
+                            message_buffer[qq] = []
 
-                        requests.post(
-                            f"{HTTP_URL}/send_group_msg",
-                            json={
-                                "group_id": GROUP_ID,
-                                "message": forward
-                            }
-                        )
+                        message_buffer[qq].append(text)
 
-                        # 自动回复
-                        requests.post(
-                            f"{HTTP_URL}/send_private_msg",
-                            json={
-                                "user_id": qq,
-                                "message": AUTO_REPLY
-                            }
-                        )
+                        # 如果没有启动计时器
+                        if qq not in timer_tasks:
 
-                    # 群消息
-                    if data["message_type"] == "group":
-
-                        if data["group_id"] != GROUP_ID:
-                            continue
-
-                        text = data["raw_message"]
-
-                        # 回复格式
-                        # 例如：
-                        # 回复 123456 hello
-
-                        if text.startswith("回复"):
-
-                            parts = text.split(" ",2)
-
-                            if len(parts) >= 3:
-
-                                target = parts[1]
-                                message = parts[2]
-
-                                requests.post(
-                                    f"{HTTP_URL}/send_private_msg",
-                                    json={
-                                        "user_id": target,
-                                        "message": message
-                                    }
-                                )
-
-                                print("已转发回复")
+                            timer_tasks[qq] = asyncio.create_task(
+                                send_after_delay(qq)
+                            )
 
         except Exception as e:
-            print("断开连接，5秒重连:", e)
+
+            print("连接断开，5秒重连:", e)
             await asyncio.sleep(5)
+
 
 asyncio.run(listen())
